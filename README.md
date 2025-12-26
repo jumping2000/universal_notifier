@@ -247,7 +247,7 @@ data:
 ```
 ___
 
-## 🐛 Troubleshooting
+## 🪲 Troubleshooting
 For debug, add in *configuration.yaml*:
 
 ```yaml
