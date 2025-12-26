@@ -30,11 +30,12 @@ send:
         object:
     target_data:
       name: Target Specific Data
-      description: Payload specifico per singolo target (es. clickAction per mobile).
+      description: >
+        Payload specifico per singolo target. 
+        Puoi usare la chiave 'message' qui per sovrascrivere il messaggio principale solo per questo target.
       required: false
       selector:
         object:
-
     # --- OVERRIDES & FLAGS ---
     priority:
       name: Priority Message
@@ -67,4 +68,3 @@ send:
       required: false
       selector:
         object:
-
