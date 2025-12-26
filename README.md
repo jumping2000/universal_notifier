@@ -3,8 +3,10 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/jumping2000/universal_notifier?style=for-the-badge) 
 ![GitHub Release Date](https://img.shields.io/github/release-date/jumping2000/universal_notifier?style=for-the-badge)
+<!---
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-Yes-brightgreen.svg)](https://https://github.com/jumping2000/universal_notifier/graphs/commit-activity?style=for-the-badge)
 [![GitHub issues](https://img.shields.io/github/issues/jumping2000/universal_notifier)](https://github.com/jumping2000/universal_notifier/issues?style=for-the-badge)<br>
+--->
 [![Buy me a coffee](https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg)](https://www.buymeacoffee.com/jumping)<span style="margin-left:15px;font-size:28px !important;">Buy me a coffee</span></a>
 
 ### [Support our work with a donation](https://paypal.me/hassiohelp)
@@ -78,16 +80,27 @@ universal_notifier:
       is_voice: true
 
     # Example GH (Voice - Requires entity_id for volume control)
-    google_kitchen:
-        service: tts.google_translate_say
-        entity_id: media_player.google_nest
-        is_voice: true
+    gh_kitchen:
+      service: tts.speak
+      target: tts.google_translate_it_it
+      service_data:
+        media_player_entity_id: media_player.kitchen
+      volume_entity: media_player.kitchen
+      is_voice: true
 
-    # Example TELEGRAM (Text)
+    # Example TELEGRAM
     telegram_admin:
       service: telegram_bot.send_message
       target: 123456789
-      is_voice: false
+      alt_services:
+        photo:
+          service: telegram_bot.send_photo
+          service_data:
+            target: 123456789
+        video:
+          service: telegram_bot.send_video
+          service_data:
+            target: 123456789
       
     # Example MOBILE APP
     my_android:
@@ -209,10 +222,30 @@ data:
     my_android:
       tts_text: "The postman is at the door."
       media_stream: alarm_stream_max
-      # Companion app specific option
       clickAction: /lovelace/main
 ```
 
+#### 4. Multi target
+How to send to multiple targets.
+
+```yaml
+action: universal_notifier.send
+data:
+  priority: true
+  message: "Something happened at home!"
+  targets: 
+    - my_phone
+    - telegram_gianpi
+    - gh_ingresso
+  target_data:
+    my_phone:
+      image: "https://www.home-assistant.io/images/default-social.png"
+      color: red
+      channel: "Motion"
+    telegram_gianpi:
+      type: photo
+      url: "https://www.home-assistant.io/images/default-social.png"
+```
 ___
 
 ## 🐛 Troubleshooting
