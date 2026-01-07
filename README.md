@@ -10,6 +10,8 @@
 [![Buy me a coffee](https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg)](https://www.buymeacoffee.com/jumping)<span style="margin-left:15px;font-size:38px !important;"><b>Buy me a coffee and give me a star ✨!</b></span></a>
 <a href="https://www.buymeacoffee.com/jumping"><img src="https://cdn.buymeacoffee.com/buttons/default-yellow.png" height="20">
 
+___
+
 **Universal Notifier** è un componente custom per Home Assistant che centralizza e potenzia la gestione delle notifiche.
 
 Trasforma semplici automazioni in un sistema di comunicazione "Smart Home" che conosce l'ora del giorno, rispetta il tuo sonno (DND), saluta in modo naturale e gestisce automaticamente il volume degli assistenti vocali.
@@ -22,17 +24,6 @@ Trasforma semplici automazioni in un sistema di comunicazione "Smart Home" che c
 * **Do Not Disturb (DND):** Definisci un orario di silenzio per gli assistenti vocali. Le notifiche critiche (`priority: true`) passano comunque.
 * **Saluti Casuali:** "Buongiorno", "Buon pomeriggio", ecc., scelti casualmente da liste personalizzabili.
 * **Gestione Comandi:** Supporto nativo per comandi Companion App (es. `TTS`, `command_volume_level`) inviati in modalità "RAW".
-
-## 🚀 Installazione
-
-### Tramite HACS (Consigliato)
-1.  Aggiungi questo repository come **Custom Repository** in HACS (Tipo: *Integration*).
-2.  Cerca "Universal Notifier" e installa.
-3.  Riavvia Home Assistant.
-
-### Manuale
-1.  Copia la cartella `universal_notifier` dentro `/config/custom_components/`.
-2.  Riavvia Home Assistant.
 
 ___
 
@@ -50,6 +41,8 @@ It transforms simple automations into a "Smart Home" communication system that k
 * **Command Handling:** Native support for Companion App commands (e.g., `TTS`, `command_volume_level`) sent in "RAW" mode.
 
 ## 🚀 Installation
+<details>
+  <summary>Click me</summary>
 
 ### Via HACS (Recommended)
 1.  Add this repository as a **Custom Repository** in HACS (Category: *Integration*).
@@ -60,11 +53,39 @@ It transforms simple automations into a "Smart Home" communication system that k
 1.  Copy the `universal_notifier` folder into your `/config/custom_components/` directory.
 2.  Restart Home Assistant.
 
-___
+</details>
+
+## 🔗 Prerequisites
+<details>
+  <summary>Click me</summary>
+
+Before configuring Universal Notifier, ensure you have installed and set up the underlying notification integrations you plan to use:
+* **Google Home / TTS**: Install the Google Translate [Text-to-Speech (TTS)](https://www.home-assistant.io/integrations/tts) integration to enable voice announcements on Google Assistant devices.
+* **Alexa / Echo Devices**: Install the [Alexa Media Player Custom Component](https://github.com/alandtse/alexa_media_player) (via HACS) to allow Home Assistant to send announcements and set volume on Echo devices.
+* **Telegram**: Configure and install the [Telegram Bot](https://www.home-assistant.io/integrations/telegram_bot/) integration to send visual messages.
+* **Mobile App**: Ensure the [Mobile App integration](https://companion.home-assistant.io/) is active and configured for your devices (this is usually set up automatically when you log in via the app).
+
+This component acts as a "router"; it must have the target services available to function correctly.
+</details>
 
 ## ⚙️ Configuration (`configuration.yaml`)
+<details>
+  <summary>Click me</summary>
 
-#### Base Configuration (it uses default value in const.py file)
+Time slots default value:
+|Time Slot|Start|Volume|
+|:---|:---|:---|
+|morning|07:00|0.35|
+|afternoon|12:00|0.4|
+|evening|19:00|0.3|
+|night|022:00|0.1|
+
+Do Not Disturb default value:
+|Service|Start|End|
+|:---|:---|:---|
+|DND|23:00|06.00|
+
+#### Base Configuration (it uses default values for time slots and DND)
 
 ```yaml
 universal_notifier:
@@ -164,9 +185,12 @@ universal_notifier:
       service: notify.mobile_app_samsungs21
 ```
 
-___
+</details>
 
 ## 🎯 Service Field Reference
+<details>
+  <summary>Click me</summary>
+
 |Field|Type | Required |Description |
 |:---|:---|:---|:---|
 |message|string|Yes|The main text of the notification.|
@@ -180,9 +204,11 @@ ___
 |assistant_name|string|No|Overrides the global assistant name.|
 |override_greetings|dict|No|Overrides the default greetings for this single call.|
 
-___
+</details>
 
 ## 📝 Usage Examples
+<details>
+  <summary>Click me</summary>
 
 #### 1. Standard Notification (Automatic Volume)
 If sent at 3:00 PM, it will use the afternoon volume (0.60). If sent at 2:00 AM (DND is active), Alexa will be skipped, but Telegram will receive the message.
@@ -255,9 +281,13 @@ data:
     gh_kitchen:
       volume: 0.5
 ```
-___
+
+</details>
 
 ## 🪲 Troubleshooting
+<details>
+  <summary>Click me</summary>
+  
 For debug, add in *configuration.yaml*:
 
 ```yaml
@@ -266,3 +296,5 @@ logger:
   logs:
     custom_components.universal_notifier: debug
 ```
+
+</details>
