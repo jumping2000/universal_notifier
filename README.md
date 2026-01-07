@@ -25,7 +25,6 @@ Trasforma semplici automazioni in un sistema di comunicazione "Smart Home" che c
 * **Saluti Casuali:** "Buongiorno", "Buon pomeriggio", ecc., scelti casualmente da liste personalizzabili.
 * **Gestione Comandi:** Supporto nativo per comandi Companion App (es. `TTS`, `command_volume_level`) inviati in modalità "RAW".
 
-___
 
 **Universal Notifier** is a custom Home Assistant component that centralizes and enhances notification management.
 
@@ -39,6 +38,8 @@ It transforms simple automations into a "Smart Home" communication system that k
 * **Do Not Disturb (DND):** Define quiet hours for voice assistants. Critical notifications (`priority: true`) will still go through.
 * **Random Greetings:** "Good morning," "Good afternoon," etc., chosen randomly from customizable lists.
 * **Command Handling:** Native support for Companion App commands (e.g., `TTS`, `command_volume_level`) sent in "RAW" mode.
+
+___
 
 ## 🚀 Installation
 <details>
