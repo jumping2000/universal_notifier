@@ -1,238 +1,188 @@
 # /config/custom_components/universal_notifier/__init__.py
 
-"""
-Universal Notifier Component
-Wrapper avanzato per notifiche multi-canale (TTS, Notify, Telegram, Alexa)
-con gestione intelligente di volumi, orari DND e sanitizzazione testi.
-"""
-
 import logging
-import asyncio
 import random
-import html
 import re
-import unicodedata
 import voluptuous as vol
-import homeassistant.util.dt as dt_util
-from datetime import time
-
+import homeassistant.helpers.config_validation as cv
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers import config_validation as cv
-from homeassistant.const import (
-    # Importiamo costanti base se necessario, ma evitiamo conflitti.
-    ATTR_ENTITY_ID
-)
+from homeassistant.util import dt as dt_util
 
+# Importiamo TUTTE le costanti necessarie
 from .const import (
-    DOMAIN, CONF_CHANNELS, CONF_ASSISTANT_NAME, CONF_DATE_FORMAT, 
-    CONF_GREETINGS, CONF_IS_VOICE, CONF_OVERRIDE_GREETINGS, CONF_INCLUDE_TIME,
-    CONF_TIME_SLOTS, CONF_DND, CONF_PRIORITY,
-    CONF_SERVICE, CONF_SERVICE_DATA, CONF_TARGET, CONF_ENTITY_ID, 
-    CONF_ALT_SERVICES, CONF_TYPE,
-    DEFAULT_NAME, DEFAULT_DATE_FORMAT, DEFAULT_GREETINGS, DEFAULT_INCLUDE_TIME,
-    DEFAULT_TIME_SLOTS, DEFAULT_DND, PRIORITY_VOLUME, COMPANION_COMMANDS
+    DOMAIN,
+    # Config keys
+    CONF_CHANNELS, CONF_ASSISTANT_NAME, CONF_DATE_FORMAT,
+    CONF_GREETINGS, CONF_TIME_SLOTS, CONF_DND, CONF_BOLD_PREFIX,
+    # Service keys (Inputs)
+    CONF_MESSAGE, CONF_TITLE, CONF_TARGETS, CONF_DATA, CONF_TARGET_DATA,
+    CONF_PRIORITY, CONF_SKIP_GREETING, CONF_INCLUDE_TIME, CONF_OVERRIDE_GREETINGS,
+    # Inner Channel keys
+    CONF_SERVICE, CONF_SERVICE_DATA, CONF_TARGET, CONF_ENTITY_ID,
+    CONF_IS_VOICE, CONF_ALT_SERVICES, CONF_TYPE,
+    # Defaults
+    DEFAULT_NAME, DEFAULT_DATE_FORMAT, DEFAULT_INCLUDE_TIME,
+    DEFAULT_GREETINGS, DEFAULT_TIME_SLOTS, DEFAULT_DND, 
+    DEFAULT_BOLD_PREFIX, PRIORITY_VOLUME, COMPANION_COMMANDS
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 # ==============================================================================
-# SEZIONE: HELPER FUNCTIONS (SANITIZZAZIONE)
+# HELPER FUNCTIONS
 # ==============================================================================
 
+def is_time_in_range(start_str: str, end_str: str, now_time) -> bool:
+    """Controlla se l'orario attuale è in un range (gestisce accavallamento notte)."""
+    start = dt_util.parse_time(start_str)
+    end = dt_util.parse_time(end_str)
+    if start <= end:
+        return start <= now_time <= end
+    else:
+        return start <= now_time or now_time <= end
+
+def get_current_slot_info(slots_conf: dict, now_time) -> tuple:
+    """Restituisce (nome_slot, volume) basandosi sull'ora attuale."""
+    # Ordiniamo gli slot per orario di inizio
+    sorted_slots = []
+    for name, data in slots_conf.items():
+        t_obj = dt_util.parse_time(data["start"])
+        sorted_slots.append((name, t_obj, data.get("volume", 0.5)))
+    
+    sorted_slots.sort(key=lambda x: x[1]) # Ordina per orario
+    
+    current_slot = "day" # Fallback
+    current_vol = 0.5
+    
+    # Logica semplice: trova l'ultimo slot passato
+    for name, start_time, vol_val in sorted_slots:
+        if now_time >= start_time:
+            current_slot = name
+            current_vol = vol_val
+    
+    # Se siamo prima del primo slot (es. 01:00 e il primo slot è 07:00),
+    # allora siamo tecnicamente nell'ultimo slot della lista (notte)
+    if now_time < sorted_slots[0][1]:
+        current_slot = sorted_slots[-1][0]
+        current_vol = sorted_slots[-1][2]
+        
+    return current_slot, current_vol
+
 def clean_text_for_tts(text: str) -> str:
-    """
-    Pulisce il testo per i motori TTS (Google/Alexa).
-    Rimuove emoji, HTML, URL e caratteri speciali markdown che disturbano la lettura.
-    """
+    """Rimuove caratteri speciali per la sintesi vocale."""
     if not text: return ""
-    
-    # 1. Rimuove HTML
-    text = re.sub(r'<[^>]+>', '', text)
-    # 2. Rimuove URL
+    # Rimuove markdown base e parentesi
+    text = re.sub(r'[*_`\[\]]', '', text)
+    # Rimuove URL
     text = re.sub(r'http\S+', '', text)
-    # 3. Rimuove caratteri Markdown rumorosi (*, _, `, ~)
-    text = re.sub(r'[*_`~]', '', text)
-    # 4. Rimuove Emojis (Categoria Unicode 'So' = Symbol, other)
-    text = "".join(c for c in text if not unicodedata.category(c).startswith('So'))
-    # 5. Normalizza spazi bianchi
-    text = re.sub(r'\s+', ' ', text).strip()
-    
+    return text.strip()
+
+def sanitize_text_visual(text: str, parse_mode: str = None) -> str:
+    """Pulisce o esegue l'escape del testo per visualizzazione (HTML/Markdown)."""
+    if not text: return ""
+    # Se il target usa HTML (es. Telegram), dobbiamo fare l'escape di < e >
+    if parse_mode and "html" in parse_mode.lower():
+        text = text.replace("<", "&lt;").replace(">", "&gt;")
     return text
 
-def escape_markdown_v2(text: str) -> str:
-    """Esegue l'escape dei caratteri riservati per Telegram MarkdownV2."""
-    if not text: return ""
-    escape_chars = r"_*[]()~`>#+-=|{}.!"
-    return "".join(f"\\{char}" if char in escape_chars else char for char in text)
-
-def sanitize_text_visual(text: str, parse_mode: str) -> str:
-    """Pulisce il testo per la visualizzazione (Telegram/App)."""
+def apply_formatting(text: str, parse_mode: str, style: str = "bold") -> str:
+    """Applica la formattazione (grassetto) in base al parse_mode."""
     if not text: return ""
     mode = parse_mode.lower() if parse_mode else ""
     
-    if "markdown" in mode:
-        return escape_markdown_v2(text)
-    elif "html" in mode:
-        return html.escape(text, quote=False)
+    if "html" in mode:
+        if style == "bold": return f"<b>{text}</b>"
     
+    elif "markdown" in mode:
+        # Telegram MarkdownV2 usa *bold*, Standard usa **bold**
+        # Usiamo *text* che è spesso compatibile con V2
+        return f"*{text}*" 
+        
     return text
 
 # ==============================================================================
-# SEZIONE: SCHEMI DI VALIDAZIONE (CONFIG)
+# SCHEMAS
 # ==============================================================================
 
-# Schema singolo slot orario (es. morning)
-TIME_SLOT_SCHEMA = vol.Schema({
-    vol.Required("start"): cv.time,
-    vol.Optional("volume", default=0.5): vol.All(vol.Coerce(float), vol.Range(min=0, max=1))
-})
-
-# Schema contenitore slot orari
-TIME_SLOTS_CONFIG_SCHEMA = vol.Schema({
-    vol.Optional("morning", default=DEFAULT_TIME_SLOTS["morning"]): TIME_SLOT_SCHEMA,
-    vol.Optional("afternoon", default=DEFAULT_TIME_SLOTS["afternoon"]): TIME_SLOT_SCHEMA,
-    vol.Optional("evening", default=DEFAULT_TIME_SLOTS["evening"]): TIME_SLOT_SCHEMA,
-    vol.Optional("night", default=DEFAULT_TIME_SLOTS["night"]): TIME_SLOT_SCHEMA,
-})
-
-# Schema Do Not Disturb
-DND_SCHEMA = vol.Schema({
-    vol.Optional("start", default=DEFAULT_DND["start"]): cv.time,
-    vol.Optional("end", default=DEFAULT_DND["end"]): cv.time,
-})
-
-# Schema Saluti
-GREETINGS_SCHEMA = vol.Schema({
-    vol.Optional("morning", default=DEFAULT_GREETINGS["morning"]): vol.All(cv.ensure_list, [cv.string]),
-    vol.Optional("afternoon", default=DEFAULT_GREETINGS["afternoon"]): vol.All(cv.ensure_list, [cv.string]),
-    vol.Optional("evening", default=DEFAULT_GREETINGS["evening"]): vol.All(cv.ensure_list, [cv.string]),
-    vol.Optional("night", default=DEFAULT_GREETINGS["night"]): vol.All(cv.ensure_list, [cv.string]),
-})
-
-# Schema Servizi Alternativi (per target_data)
-ALT_SERVICE_ITEM_SCHEMA = vol.Schema({
-    vol.Required(CONF_SERVICE): cv.string,
-    vol.Optional(CONF_SERVICE_DATA): dict,
-})
-
-# Schema Canale
 CHANNEL_SCHEMA = vol.Schema({
     vol.Required(CONF_SERVICE): cv.string,
+    vol.Optional(CONF_TARGET): cv.string, # Entity ID del provider (es. tts.google)
     vol.Optional(CONF_IS_VOICE, default=False): cv.boolean,
-    # Entity ID: Per TTS è il provider (es. tts.google), per altri il target base.
-    vol.Optional(CONF_ENTITY_ID): cv.entity_ids,
-    # Target: Per Notify/Alexa è la lista dei media_player/devices.
-    vol.Optional(CONF_TARGET): vol.Any(cv.string, int, list),
-    # Service Data: Contiene dati statici. Per TTS qui vanno i media_player_entity_id.
-    vol.Optional(CONF_SERVICE_DATA): vol.Schema({
-        # Permettiamo liste per media_player_entity_id (Google Home Grouping)
-        vol.Optional("media_player_entity_id"): vol.All(cv.ensure_list, [cv.entity_id]),
-    }, extra=vol.ALLOW_EXTRA),
-    vol.Optional(CONF_ALT_SERVICES): vol.Schema({
-        cv.string: ALT_SERVICE_ITEM_SCHEMA
-    }),
+    vol.Optional(CONF_SERVICE_DATA): dict, # Dati statici (es. media_player target)
+    vol.Optional(CONF_ALT_SERVICES): dict
 })
 
-# Schema Globale
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
+        vol.Required(CONF_CHANNELS): vol.Schema({cv.string: CHANNEL_SCHEMA}),
         vol.Optional(CONF_ASSISTANT_NAME, default=DEFAULT_NAME): cv.string,
         vol.Optional(CONF_DATE_FORMAT, default=DEFAULT_DATE_FORMAT): cv.string,
         vol.Optional(CONF_INCLUDE_TIME, default=DEFAULT_INCLUDE_TIME): cv.boolean,
-        vol.Optional(CONF_GREETINGS, default=GREETINGS_SCHEMA({})): GREETINGS_SCHEMA,
-        vol.Optional(CONF_TIME_SLOTS, default=TIME_SLOTS_CONFIG_SCHEMA({})): TIME_SLOTS_CONFIG_SCHEMA,
-        vol.Optional(CONF_DND, default=DND_SCHEMA({})): DND_SCHEMA,
-        vol.Required(CONF_CHANNELS): vol.Schema({
-            cv.string: CHANNEL_SCHEMA
-        }),
+        vol.Optional(CONF_BOLD_PREFIX, default=DEFAULT_BOLD_PREFIX): cv.boolean, # <--- Config Globale
+        vol.Optional(CONF_TIME_SLOTS, default=DEFAULT_TIME_SLOTS): dict,
+        vol.Optional(CONF_DND, default=DEFAULT_DND): dict,
+        vol.Optional(CONF_GREETINGS, default=DEFAULT_GREETINGS): dict,
     }),
 }, extra=vol.ALLOW_EXTRA)
 
-# NEW 0.3 # Schema specifico per il servizio 'send'
+# Schema specifico per il servizio 'send' usando le COSTANTI
 SEND_SERVICE_SCHEMA = vol.Schema({
-    vol.Required("message"): cv.string,
-    vol.Required("targets"): vol.All(cv.ensure_list, [cv.string]),
-    vol.Optional("title"): cv.string,
-    vol.Optional("data"): dict,
-    vol.Optional("target_data"): dict,
-    vol.Optional("priority"): cv.boolean,
-    vol.Optional("skip_greeting"): cv.boolean,
-    vol.Optional("include_time"): cv.boolean,
-    vol.Optional("assistant_name"): cv.string,
-    vol.Optional("override_greetings"): dict,
+    vol.Required(CONF_MESSAGE): cv.string,
+    vol.Required(CONF_TARGETS): vol.All(cv.ensure_list, [cv.string]),
+    vol.Optional(CONF_TITLE): cv.string,
+    vol.Optional(CONF_DATA): dict,
+    vol.Optional(CONF_TARGET_DATA): dict,
+    vol.Optional(CONF_PRIORITY): cv.boolean,
+    vol.Optional(CONF_SKIP_GREETING): cv.boolean,
+    vol.Optional(CONF_INCLUDE_TIME): cv.boolean,
+    vol.Optional(CONF_ASSISTANT_NAME): cv.string,
+    vol.Optional(CONF_BOLD_PREFIX): cv.boolean,
+    vol.Optional(CONF_OVERRIDE_GREETINGS): dict,
 }, extra=vol.ALLOW_EXTRA)
 
 # ==============================================================================
-# SEZIONE: LOGICA TEMPORALE
-# ==============================================================================
-
-def is_time_in_range(start: time, end: time, now: time) -> bool:
-    """Gestisce il controllo orario anche attraverso la mezzanotte."""
-    if start <= end:
-        return start <= now < end
-    else:
-        return start <= now or now < end
-
-def get_current_slot_info(time_slots_conf, now_time):
-    """Restituisce volume e chiave slot basandosi sull'ora attuale."""
-    slots = []
-    for key, data in time_slots_conf.items():
-        slots.append((data["start"], key, data["volume"]))
-    slots.sort(key=lambda x: x[0])
-    
-    found_key = None
-    found_vol = None
-    
-    for start, key, vol in slots:
-        if now_time >= start:
-            found_key = key
-            found_vol = vol
-        else:
-            break
-            
-    if found_key is None and slots:
-        # Se siamo prima del primo slot, siamo nell'ultimo slot del giorno prima (notte)
-        last_slot = slots[-1] 
-        found_key = last_slot[1]
-        found_vol = last_slot[2]
-        
-    return found_key, found_vol
-
-# ==============================================================================
-# SEZIONE: MAIN SETUP
+# MAIN LOGIC
 # ==============================================================================
 
 async def async_setup(hass: HomeAssistant, config: dict):
-    """Inizializzazione del componente."""
-    if DOMAIN not in config: return True
+    """Setup del componente Universal Notifier."""
+    
+    if DOMAIN not in config:
+        return True
     
     conf = config[DOMAIN]
-    channels_config = conf.get(CONF_CHANNELS, {})
     
-    base_greetings = conf.get(CONF_GREETINGS) 
-    time_slots_conf = conf.get(CONF_TIME_SLOTS)
-    dnd_conf = conf.get(CONF_DND)
-    global_name = conf.get(CONF_ASSISTANT_NAME)
-    global_date_fmt = conf.get(CONF_DATE_FORMAT)
-    global_include_time = conf.get(CONF_INCLUDE_TIME)
+    # Caricamento configurazioni globali
+    channels_config = conf[CONF_CHANNELS]
+    global_name = conf[CONF_ASSISTANT_NAME]
+    global_date_fmt = conf[CONF_DATE_FORMAT]
+    global_include_time = conf[CONF_INCLUDE_TIME]
+    
+    time_slots_conf = conf.get(CONF_TIME_SLOTS, DEFAULT_TIME_SLOTS)
+    dnd_conf = conf.get(CONF_DND, DEFAULT_DND)
+    base_greetings = conf.get(CONF_GREETINGS, DEFAULT_GREETINGS)
 
     async def async_send_notification(call: ServiceCall):
         """
         Handler principale del servizio 'send'.
-        Gestisce logica, routing, preparazione payload e invio.
         """
         # 1. Parsing Input Runtime
-        global_raw_message = call.data.get("message", "")
-        title = call.data.get("title")
-        runtime_data = call.data.get("data", {})
-        target_specific_data = call.data.get("target_data", {})
-        targets = call.data.get("targets", [])
+        global_raw_message = call.data.get(CONF_MESSAGE, "")
+        title = call.data.get(CONF_TITLE)
+        runtime_data = call.data.get(CONF_DATA, {})
+        target_specific_data = call.data.get(CONF_TARGET_DATA, {})
+        targets = call.data.get(CONF_TARGETS, [])
         
-        override_name = call.data.get("assistant_name", global_name)
-        skip_greeting = call.data.get("skip_greeting", False)
+        # Override parametri opzionali
+        override_name = call.data.get(CONF_ASSISTANT_NAME, global_name)
+        skip_greeting = call.data.get(CONF_SKIP_GREETING, False)
         include_time = call.data.get(CONF_INCLUDE_TIME, global_include_time)
         is_priority = call.data.get(CONF_PRIORITY, False)
         
+        # Gestione Bold
+        global_bold_setting = conf.get(CONF_BOLD_PREFIX, DEFAULT_BOLD_PREFIX)
+        use_bold_prefix = call.data.get(CONF_BOLD_PREFIX, global_bold_setting)
+
         # 2. Analisi Contesto (Ora, Slot, DND)
         now = dt_util.now()
         now_time = now.time()
@@ -242,7 +192,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
         
         # 3. Gestione Saluti
         override_greetings_data = call.data.get(CONF_OVERRIDE_GREETINGS)
-        effective_greetings = base_greetings 
+        effective_greetings = base_greetings
         if override_greetings_data:
             effective_greetings = base_greetings.copy() 
             for key, value in override_greetings_data.items():
@@ -253,14 +203,12 @@ async def async_setup(hass: HomeAssistant, config: dict):
         options = effective_greetings.get(slot_key, [])
         current_greeting = random.choice(options) if options and not skip_greeting else ""
         
-        # Prefisso Testuale (es. [Home - 12:00]) - Non usato in TTS
-        prefix_parts = [f"[{override_name}"]
-        if include_time:
-            prefix_parts.append(f" - {now.strftime(global_date_fmt)}")
-        raw_prefix_text = "".join(prefix_parts) + "] "
-        
-        if isinstance(targets, str): targets = [targets]
-        tasks = []
+        # Dati base per prefissi
+        raw_name = override_name
+        raw_time_str = now.strftime(global_date_fmt) if include_time else ""
+
+        if isinstance(targets, str):
+            targets = [targets]
 
         # ======================================================================
         # 4. CICLO SUI CANALI (TARGETS)
@@ -277,166 +225,131 @@ async def async_setup(hass: HomeAssistant, config: dict):
             if target_alias in target_specific_data:
                 specific_data = target_specific_data[target_alias].copy()
             
-            target_raw_message = specific_data.pop("message", global_raw_message)
+            # Recupero messaggio specifico o globale
+            target_raw_message = specific_data.pop(CONF_MESSAGE, global_raw_message)
 
-            # B. Selezione Servizio (Principale vs Alternativo)
+            # B. Selezione Servizio (Fallback o Principale)
             service_type = specific_data.pop(CONF_TYPE, runtime_data.get(CONF_TYPE, None))
             alt_services_conf = channel_conf.get(CONF_ALT_SERVICES, {})
             
             if service_type and service_type in alt_services_conf:
-                # Usa servizio alternativo (es. Video)
                 target_service_conf = alt_services_conf[service_type]
                 full_service_name = target_service_conf[CONF_SERVICE]
                 base_service_payload = target_service_conf.get(CONF_SERVICE_DATA, {}) or {}
+                # I servizi alternativi di solito non sono considerati "Voice" per logica volume/saluti
                 is_voice_channel = False 
             else:
-                # Usa servizio principale
                 full_service_name = channel_conf[CONF_SERVICE]
                 base_service_payload = channel_conf.get(CONF_SERVICE_DATA, {}) or {}
                 is_voice_channel = channel_conf[CONF_IS_VOICE]
 
-            # C. Check Comandi (Pass-through raw)
+            # C. Check Comandi (per mobile app)
             is_command_message = False
             if target_raw_message in COMPANION_COMMANDS or str(target_raw_message).startswith("command_"):
                 is_command_message = True
 
-            # D. Costruzione Messaggio Finale
+            # D. Costruzione Messaggio Finale e Formattazione
+            # Tentiamo di indovinare o leggere il parse_mode
             parse_mode = specific_data.get("parse_mode", runtime_data.get("parse_mode"))
             if not parse_mode and "telegram_bot" in full_service_name:
+                # Default Telegram è spesso HTML se non specificato altrimenti
                 parse_mode = "html"
 
+            final_msg = ""
+            
             if is_command_message:
+                # Se è un comando, passiamo il raw message senza alterazioni
                 final_msg = target_raw_message
             else:
                 if is_voice_channel:
-                    # Logica TTS: Pulizia avanzata
+                    # Logica TTS (Niente Bolding, solo testo pulito)
                     clean_msg = clean_text_for_tts(str(target_raw_message))
                     clean_greet = clean_text_for_tts(current_greeting)
                     final_msg = f"{clean_greet}. {clean_msg}" if clean_greet else clean_msg
                 else:
-                    # Logica Visuale: Sanitizzazione HTML/Markdown
-                    clean_prefix = sanitize_text_visual(raw_prefix_text, parse_mode)
+                    # Logica Visuale: Sanitizzazione + Bolding
+                    
+                    # 1. Sanitizziamo i componenti base
+                    clean_name = sanitize_text_visual(raw_name, parse_mode)
+                    clean_time = sanitize_text_visual(raw_time_str, parse_mode)
                     clean_msg = sanitize_text_visual(str(target_raw_message), parse_mode)
                     clean_greet = sanitize_text_visual(current_greeting, parse_mode)
+
+                    # 2. Applichiamo il Bolding se richiesto
+                    if use_bold_prefix:
+                        clean_name = apply_formatting(clean_name, parse_mode, "bold")
+                        clean_time = apply_formatting(clean_time, parse_mode, "bold")
+
+                    # 3. Assemblaggio Prefisso
+                    # Formato: [Nome - 12:00] oppure [Nome]
+                    prefix_content = clean_name
+                    if clean_time:
+                        prefix_content += f" - {clean_time}"
                     
+                    # Parentesi restano fuori dal grassetto
+                    clean_prefix = f"[{prefix_content}] " 
+
                     greeting_part = f"{clean_greet}. " if clean_greet else ""
                     final_msg = f"{clean_prefix}{greeting_part}{clean_msg}"
-            
-            # E. Determinazione del Volume
-            # Priorità: 1. Runtime Override, 2. Priority Flag, 3. Slot Orario
-            override_volume = specific_data.get("volume", runtime_data.get("volume"))
-            if override_volume is not None:
-                try: target_volume = float(override_volume)
-                except ValueError: target_volume = slot_volume
-            elif is_priority:
-                target_volume = PRIORITY_VOLUME
-            else:
-                target_volume = slot_volume
 
-            # F. IDENTIFICAZIONE DEI PLAYER FISICI (Per Volume e Invio)
-            # Qui unifichiamo la logica: cerchiamo i device sia per TTS che per Alexa
-            
-            # 1. Cerca in tts.speak (media_player_entity_id)
-            tts_players = base_service_payload.get("media_player_entity_id", [])
-            if isinstance(tts_players, str): tts_players = [tts_players]
-            
-            # 2. Cerca in notify (target)
-            notify_targets = channel_conf.get(CONF_TARGET, [])
-            if isinstance(notify_targets, str): notify_targets = [notify_targets]
-            
-            # 3. Lista unificata dei player a cui impostare il volume
-            volume_targets = []
-            if tts_players:
-                volume_targets.extend(tts_players)
-            if notify_targets and is_voice_channel:
-                # Assumiamo che per Alexa/Notify i target siano media_player
-                volume_targets.extend(notify_targets)
-
-            # G. Applicazione Volume e Check DND (Solo Canali Voce)
+            # E. Gestione Volume (Solo Canali Voice) e DND
             if is_voice_channel:
-                if is_dnd_active and not is_priority and override_volume is None:
-                    _LOGGER.info(f"UniNotifier: Skipped '{target_alias}' (DND attivo)")
-                    continue
+                if is_dnd_active and not is_priority:
+                    _LOGGER.info(f"UniNotifier: DND attivo, skip audio su {target_alias}")
+                    continue # Salta questo target
                 
-                # Imposta volume se abbiamo player identificati
-                if volume_targets:
-                    tasks.append(hass.services.async_call(
-                        "media_player", "volume_set", 
-                        {"entity_id": volume_targets, "volume_level": target_volume}
-                    ))
-
-            # H. Preparazione Payload Servizio
-            try:
-                domain, service = full_service_name.split(".", 1)
-            except ValueError: continue
-            
-            if domain not in hass.config.components: continue
-
-            service_payload = base_service_payload.copy()
-
-            # Mapping Messaggio
-            if domain == "telegram_bot":
-                if "parse_mode" not in service_payload and parse_mode:
-                    service_payload["parse_mode"] = parse_mode
-                if service_type in ["photo", "video"]: service_payload["caption"] = final_msg
-                else: service_payload["message"] = final_msg
+                target_volume = PRIORITY_VOLUME if is_priority else slot_volume
+                
+                # Cerchiamo l'entity_id del player per settare il volume
+                # Può essere in service_data (config) o data (runtime)
+                player_entity = base_service_payload.get(CONF_ENTITY_ID) or \
+                                runtime_data.get(CONF_ENTITY_ID)
+                
+                if player_entity:
+                    await hass.services.async_call(
+                        "media_player",
+                        "volume_set",
+                        {CONF_ENTITY_ID: player_entity, "volume_level": target_volume}
+                    )
             else:
-                service_payload["message"] = final_msg # Standard per TTS e Notify
-            
-            if title: service_payload["title"] = title
-            
-            # I. Routing dei Target nel Payload
-            
-            # Caso 2: TTS / Media Player -> Usano 'entity_id' (il provider)
-            # Nota: i player destinatari per TTS sono già in service_payload['media_player_entity_id']
-            # Qui impostiamo il provider (es. tts.google)
-            elif CONF_TARGET in channel_conf: ########## in alernativa elif domain == "tts"
-                # Caso speciale: se il servizio richiede entity_id (come tts.speak per il provider)
-                # ma NON è un media_player target (che sta nei data).
-                # Per tts.speak, l'entity_id del servizio è in config[CONF_TARGET] o config[CONF_ENTITY_ID]
-                # Nella nuova conf per google home, il provider è in 'target' del yaml.
-                provider_entity = channel_conf.get(CONF_TARGET) or channel_conf.get(CONF_ENTITY_ID)
-                if provider_entity:
-                    service_payload[ATTR_ENTITY_ID] = provider_entity
+                # Canali NON vocali (es. Telegram)
+                # Se c'è DND, di solito inviamo comunque (silenzioso), a meno che tu non voglia bloccare tutto.
+                # Qui lasciamo passare, la logica DND stringente è spesso solo audio.
+                pass
 
-            # J. Merge Dati Accessori (alexa type, telegram images, etc.)
-            all_additional_data = {}
-            if runtime_data: all_additional_data.update(runtime_data)
-            if specific_data: all_additional_data.update(specific_data)
-            
-            # Pulizia chiavi interne
-            for k in ["volume", CONF_TYPE, "parse_mode"]: all_additional_data.pop(k, None)
+            # F. Costruzione Payload Finale
+            final_payload = base_service_payload.copy()
+            final_payload.update(runtime_data) # Merge dati generali
+            final_payload.update(specific_data) # Merge override target
 
-            if all_additional_data:
-                if domain == "notify":
-                    # Per Alexa e Mobile App i dati vanno in "data"
-                    if "data" not in service_payload: service_payload["data"] = {}
-                    service_payload["data"].update(all_additional_data)
-                else:
-                    # Per altri servizi, merge diretto
-                    service_payload.update(all_additional_data)
-            
-            # Logica speciale per Telegram: Broadcast (loop) se necessario
-            # Telegram Bot API standard non accetta liste in target.
-            if domain == "telegram_bot" and isinstance(notify_targets, list) and len(notify_targets) > 1:
-                # Dobbiamo splittare la chiamata
-                base_target_payload = service_payload.copy()
-                for t in notify_targets:
-                    p = base_target_payload.copy()
-                    p[CONF_TARGET] = t
-                    tasks.append(hass.services.async_call(domain, service, p))
+            # Inseriamo il messaggio finale
+            final_payload[CONF_MESSAGE] = final_msg
+            if title:
+                final_payload[CONF_TITLE] = title
+
+            # G. Gestione Entity ID del Provider (Fix CONF_TARGET)
+            # Se la configurazione del canale ha 'target' (es. tts.google),
+            # lo iniettiamo nel payload come 'entity_id' (o come richiesto dal servizio).
+            if CONF_TARGET in channel_conf:
+                final_payload[CONF_ENTITY_ID] = channel_conf[CONF_TARGET]
+
+            # H. Chiamata al Servizio
+            domain_service = full_service_name.split(".")
+            if len(domain_service) == 2:
+                srv_domain, srv_name = domain_service
+                try:
+                    await hass.services.async_call(srv_domain, srv_name, final_payload)
+                except Exception as e:
+                    _LOGGER.error(f"UniNotifier: Errore chiamata {full_service_name}: {e}")
             else:
-                # Chiamata Standard (TTS, Alexa, Notify singolo, Telegram singolo)
-                tasks.append(hass.services.async_call(domain, service, service_payload))
+                _LOGGER.error(f"UniNotifier: Servizio non valido {full_service_name}")
 
-        if tasks:
-            await asyncio.gather(*tasks)
-
-    # OLD hass.services.async_register(DOMAIN, "send", async_send_notification) NEW 0.3
+    # Registrazione del servizio con lo SCHEMA ESPLICITO
     hass.services.async_register(
         DOMAIN, 
         "send", 
         async_send_notification, 
         schema=SEND_SERVICE_SCHEMA
     )
+    
     return True
