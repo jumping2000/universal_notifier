@@ -327,6 +327,10 @@ async def async_setup(hass: HomeAssistant, config: dict):
             if title:
                 final_payload[CONF_TITLE] = title
 
+            # F2. Rimozione entity_id per servizi notify.alexa_media (schema non lo accetta)
+            if full_service_name.startswith("notify.alexa_media"):
+                final_payload.pop(CONF_ENTITY_ID, None)
+
             # G. Gestione Entity ID del Provider (Fix CONF_TARGET)
             # Se la configurazione del canale ha 'target' (es. tts.google),
             # lo iniettiamo nel payload come 'entity_id' (o come richiesto dal servizio).
