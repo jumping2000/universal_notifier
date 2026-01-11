@@ -4,8 +4,10 @@ import logging
 import random
 import re
 import voluptuous as vol
+import asyncio
 import homeassistant.helpers.config_validation as cv
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.util import dt as dt_util
 
 # Importiamo TUTTE le costanti necessarie
@@ -43,44 +45,50 @@ def is_time_in_range(start_str: str, end_str: str, now_time) -> bool:
 
 def get_current_slot_info(slots_conf: dict, now_time) -> tuple:
     """Restituisce (nome_slot, volume) basandosi sull'ora attuale."""
-    # Ordiniamo gli slot per orario di inizio
+    # Se la config è vuota, usiamo i default di const.py
+    if not slots_conf:
+        slots_conf = DEFAULT_TIME_SLOTS
+
     sorted_slots = []
     for name, data in slots_conf.items():
-        t_obj = dt_util.parse_time(data["start"])
-        sorted_slots.append((name, t_obj, data.get("volume", 0.5)))
+        # Parsing sicuro dell'orario
+        t_str = data.get("start")
+        t_obj = dt_util.parse_time(t_str) if t_str else None
+        vol_val = data.get("volume", 0.2)
+        if t_obj:
+            sorted_slots.append((name, t_obj, vol_val))
     
-    sorted_slots.sort(key=lambda x: x[1]) # Ordina per orario
+    # Ordina per orario di inizio
+    sorted_slots.sort(key=lambda x: x[1])
     
-    current_slot = "day" # Fallback
-    current_vol = 0.5
+    if not sorted_slots:
+        # Fallback estremo se nessun orario è valido
+        return "default", 0.2
+
+    # Logica: Inizializziamo con l'ultimo slot della lista.
+    # Questo copre il caso "notte" (es. dalle 23:00 alle 07:00).
+    # Se sono le 02:00, il loop sotto non scatterà mai, e rimarrà valido l'ultimo slot (night).
+    current_slot = sorted_slots[-1][0]
+    current_vol = sorted_slots[-1][2]
     
-    # Logica semplice: trova l'ultimo slot passato
     for name, start_time, vol_val in sorted_slots:
         if now_time >= start_time:
             current_slot = name
             current_vol = vol_val
-    
-    # Se siamo prima del primo slot (es. 01:00 e il primo slot è 07:00),
-    # allora siamo tecnicamente nell'ultimo slot della lista (notte)
-    if now_time < sorted_slots[0][1]:
-        current_slot = sorted_slots[-1][0]
-        current_vol = sorted_slots[-1][2]
+        # Non serve break, dobbiamo trovare l'ultimo slot valido (il più recente passato)
         
     return current_slot, current_vol
 
 def clean_text_for_tts(text: str) -> str:
     """Rimuove caratteri speciali per la sintesi vocale."""
     if not text: return ""
-    # Rimuove markdown base e parentesi
-    text = re.sub(r'[*_`\[\]]', '', text)
-    # Rimuove URL
-    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[*_`\[\]]', '', text) # Via markdown
+    text = re.sub(r'http\S+', '', text)    # Via URL
     return text.strip()
 
 def sanitize_text_visual(text: str, parse_mode: str = None) -> str:
     """Pulisce o esegue l'escape del testo per visualizzazione (HTML/Markdown)."""
     if not text: return ""
-    # Se il target usa HTML (es. Telegram), dobbiamo fare l'escape di < e >
     if parse_mode and "html" in parse_mode.lower():
         text = text.replace("<", "&lt;").replace(">", "&gt;")
     return text
@@ -94,8 +102,6 @@ def apply_formatting(text: str, parse_mode: str, style: str = "bold") -> str:
         if style == "bold": return f"<b>{text}</b>"
     
     elif "markdown" in mode:
-        # Telegram MarkdownV2 usa *bold*, Standard usa **bold**
-        # Usiamo *text* che è spesso compatibile con V2
         return f"*{text}*" 
         
     return text
@@ -104,28 +110,43 @@ def apply_formatting(text: str, parse_mode: str, style: str = "bold") -> str:
 # SCHEMAS
 # ==============================================================================
 
+# Schema per uno slot orario
+TIME_SLOT_SCHEMA = vol.Schema({
+    vol.Required("start"): cv.string, # Validato poi come time
+    vol.Optional("volume", default=0.5): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+})
+
+# Schema per un canale
 CHANNEL_SCHEMA = vol.Schema({
     vol.Required(CONF_SERVICE): cv.string,
-    vol.Optional(CONF_TARGET): cv.string, # Entity ID del provider (es. tts.google)
+    vol.Optional(CONF_TARGET): cv.string,
     vol.Optional(CONF_IS_VOICE, default=False): cv.boolean,
-    vol.Optional(CONF_SERVICE_DATA): dict, # Dati statici (es. media_player target)
+    vol.Optional(CONF_SERVICE_DATA): dict,
     vol.Optional(CONF_ALT_SERVICES): dict
 })
 
+# Schema Configurazione Globale
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
         vol.Required(CONF_CHANNELS): vol.Schema({cv.string: CHANNEL_SCHEMA}),
         vol.Optional(CONF_ASSISTANT_NAME, default=DEFAULT_NAME): cv.string,
         vol.Optional(CONF_DATE_FORMAT, default=DEFAULT_DATE_FORMAT): cv.string,
         vol.Optional(CONF_INCLUDE_TIME, default=DEFAULT_INCLUDE_TIME): cv.boolean,
-        vol.Optional(CONF_BOLD_PREFIX, default=DEFAULT_BOLD_PREFIX): cv.boolean, # <--- Config Globale
-        vol.Optional(CONF_TIME_SLOTS, default=DEFAULT_TIME_SLOTS): dict,
-        vol.Optional(CONF_DND, default=DEFAULT_DND): dict,
+        vol.Optional(CONF_BOLD_PREFIX, default=DEFAULT_BOLD_PREFIX): cv.boolean,
+        # Validazione dizionario slot orari
+        vol.Optional(CONF_TIME_SLOTS, default=DEFAULT_TIME_SLOTS): vol.Schema({
+            cv.string: TIME_SLOT_SCHEMA
+        }),
+        # Validazione DND
+        vol.Optional(CONF_DND, default=DEFAULT_DND): vol.Schema({
+            vol.Required("start"): cv.string,
+            vol.Required("end"): cv.string
+        }),
+        
         vol.Optional(CONF_GREETINGS, default=DEFAULT_GREETINGS): dict,
     }),
 }, extra=vol.ALLOW_EXTRA)
 
-# Schema specifico per il servizio 'send' usando le COSTANTI
 SEND_SERVICE_SCHEMA = vol.Schema({
     vol.Required(CONF_MESSAGE): cv.string,
     vol.Required(CONF_TARGETS): vol.All(cv.ensure_list, [cv.string]),
@@ -152,7 +173,6 @@ async def async_setup(hass: HomeAssistant, config: dict):
     
     conf = config[DOMAIN]
     
-    # Caricamento configurazioni globali
     channels_config = conf[CONF_CHANNELS]
     global_name = conf[CONF_ASSISTANT_NAME]
     global_date_fmt = conf[CONF_DATE_FORMAT]
@@ -163,27 +183,24 @@ async def async_setup(hass: HomeAssistant, config: dict):
     base_greetings = conf.get(CONF_GREETINGS, DEFAULT_GREETINGS)
 
     async def async_send_notification(call: ServiceCall):
-        """
-        Handler principale del servizio 'send'.
-        """
-        # 1. Parsing Input Runtime
+        """Handler principale del servizio 'send'."""
+        
+        # 1. Parsing Input
         global_raw_message = call.data.get(CONF_MESSAGE, "")
-        title = call.data.get(CONF_TITLE)
+        global_title = call.data.get(CONF_TITLE) # Titolo originale
         runtime_data = call.data.get(CONF_DATA, {})
         target_specific_data = call.data.get(CONF_TARGET_DATA, {})
         targets = call.data.get(CONF_TARGETS, [])
         
-        # Override parametri opzionali
         override_name = call.data.get(CONF_ASSISTANT_NAME, global_name)
         skip_greeting = call.data.get(CONF_SKIP_GREETING, False)
         include_time = call.data.get(CONF_INCLUDE_TIME, global_include_time)
         is_priority = call.data.get(CONF_PRIORITY, False)
         
-        # Gestione Bold
         global_bold_setting = conf.get(CONF_BOLD_PREFIX, DEFAULT_BOLD_PREFIX)
         use_bold_prefix = call.data.get(CONF_BOLD_PREFIX, global_bold_setting)
 
-        # 2. Analisi Contesto (Ora, Slot, DND)
+        # 2. Analisi Contesto
         now = dt_util.now()
         now_time = now.time()
         
@@ -207,149 +224,234 @@ async def async_setup(hass: HomeAssistant, config: dict):
         raw_name = override_name
         raw_time_str = now.strftime(global_date_fmt) if include_time else ""
 
-        if isinstance(targets, str):
-            targets = [targets]
+        if isinstance(targets, str): targets = [targets]
+        tasks = [] # Lista per asyncio.gather
 
         # ======================================================================
-        # 4. CICLO SUI CANALI (TARGETS)
+        # 4. CICLO SUI CANALI
         # ======================================================================
         for target_alias in targets:
             if target_alias not in channels_config:
-                _LOGGER.warning(f"UniNotifier: Target '{target_alias}' sconosciuto.")
+                _LOGGER.info(f"UniNotifier: Target '{target_alias}' sconosciuto.")
                 continue
 
             channel_conf = channels_config[target_alias]
+            _LOGGER.debug(f"UniNotifier: Channel Configuration {channel_conf }")
             
             # A. Preparazione Dati Specifici
             specific_data = {}
             if target_alias in target_specific_data:
                 specific_data = target_specific_data[target_alias].copy()
-            
-            # Recupero messaggio specifico o globale
-            target_raw_message = specific_data.pop(CONF_MESSAGE, global_raw_message)
+            _LOGGER.debug(f"UniNotifier: Specific Data {specific_data}")
 
-            # B. Selezione Servizio (Fallback o Principale)
+            target_raw_message = specific_data.pop(CONF_MESSAGE, global_raw_message)
+            
+            # B. Selezione Servizio
             service_type = specific_data.pop(CONF_TYPE, runtime_data.get(CONF_TYPE, None))
             alt_services_conf = channel_conf.get(CONF_ALT_SERVICES, {})
+            _LOGGER.debug(f"UniNotifier: Service type {service_type}")
+            _LOGGER.debug(f"UniNotifier: Service alt {alt_services_conf}")
             
             if service_type and service_type in alt_services_conf:
                 target_service_conf = alt_services_conf[service_type]
                 full_service_name = target_service_conf[CONF_SERVICE]
                 base_service_payload = target_service_conf.get(CONF_SERVICE_DATA, {}) or {}
-                # I servizi alternativi di solito non sono considerati "Voice" per logica volume/saluti
                 is_voice_channel = False 
             else:
                 full_service_name = channel_conf[CONF_SERVICE]
                 base_service_payload = channel_conf.get(CONF_SERVICE_DATA, {}) or {}
                 is_voice_channel = channel_conf[CONF_IS_VOICE]
 
-            # C. Check Comandi (per mobile app)
+            _LOGGER.debug(f"UniNotifier: Full Service Name {full_service_name}")
+            _LOGGER.debug(f"UniNotifier: Base Service Payload {base_service_payload}")
+
+            # Estrai domini per controlli successivi
+            try:
+                srv_domain, srv_name = full_service_name.split(".", 1)
+            except ValueError:
+                _LOGGER.error(f"UniNotifier: Servizio non valido {full_service_name}")
+                continue
+
+            # C. Check Comandi
             is_command_message = False
             if target_raw_message in COMPANION_COMMANDS or str(target_raw_message).startswith("command_"):
                 is_command_message = True
 
-            # D. Costruzione Messaggio Finale e Formattazione
-            # Tentiamo di indovinare o leggere il parse_mode
+            # D. COSTRUZIONE MESSAGGIO E TITOLO
             parse_mode = specific_data.get("parse_mode", runtime_data.get("parse_mode"))
-            if not parse_mode and "telegram_bot" in full_service_name:
-                # Default Telegram è spesso HTML se non specificato altrimenti
+            if not parse_mode and srv_domain == "telegram_bot":
                 parse_mode = "html"
 
             final_msg = ""
+            final_title = global_title # Start col titolo originale
             
             if is_command_message:
-                # Se è un comando, passiamo il raw message senza alterazioni
                 final_msg = target_raw_message
             else:
+                # --- LOGICA 1: CANALI VOCALI (TTS) ---
                 if is_voice_channel:
-                    # Logica TTS (Niente Bolding, solo testo pulito)
+                    # 1. Pulizia testo per TTS
                     clean_msg = clean_text_for_tts(str(target_raw_message))
                     clean_greet = clean_text_for_tts(current_greeting)
-                    final_msg = f"{clean_greet}. {clean_msg}" if clean_greet else clean_msg
-                else:
-                    # Logica Visuale: Sanitizzazione + Bolding
+                    # 2. Incorporazione del TITOLO nel messaggio vocale
+                    full_spoken_text = ""
                     
-                    # 1. Sanitizziamo i componenti base
+                    if final_title:
+                        clean_title = clean_text_for_tts(final_title)
+                        if clean_title:
+                            full_spoken_text += f"{clean_title}. "
+                    
+                    if clean_greet:
+                        full_spoken_text += f"{clean_greet}. "
+                    
+                    full_spoken_text += clean_msg
+                    
+                    final_msg = full_spoken_text
+                    
+                    # 3. Rimuoviamo il titolo dal payload finale per evitare errori TTS
+                    final_title = None 
+
+                # --- LOGICA 2: CANALI VISUALI ---
+                else:
+                    # 1. Sanitizzazione base
                     clean_name = sanitize_text_visual(raw_name, parse_mode)
                     clean_time = sanitize_text_visual(raw_time_str, parse_mode)
                     clean_msg = sanitize_text_visual(str(target_raw_message), parse_mode)
                     clean_greet = sanitize_text_visual(current_greeting, parse_mode)
+                    # Sanitizza anche il titolo originale se presente
+                    clean_orig_title = sanitize_text_visual(final_title, parse_mode) if final_title else None
 
-                    # 2. Applichiamo il Bolding se richiesto
+                    # 2. Bolding
                     if use_bold_prefix:
                         clean_name = apply_formatting(clean_name, parse_mode, "bold")
                         clean_time = apply_formatting(clean_time, parse_mode, "bold")
 
-                    # 3. Assemblaggio Prefisso
-                    # Formato: [Nome - 12:00] oppure [Nome]
+                    # 3. Costruzione stringa Prefisso
+                    # Formato: [Nome - 12:00]
                     prefix_content = clean_name
                     if clean_time:
                         prefix_content += f" - {clean_time}"
-                    
-                    # Parentesi restano fuori dal grassetto
-                    clean_prefix = f"[{prefix_content}] " 
+                    clean_prefix = f"[{prefix_content}]" # Nota: niente spazio finale qui, lo gestiamo dopo
 
+                    # 4. Distribuzione Prefisso (Richiesta 2)
                     greeting_part = f"{clean_greet}. " if clean_greet else ""
-                    final_msg = f"{clean_prefix}{greeting_part}{clean_msg}"
-
-            # E. Gestione Volume (Solo Canali Voice) e DND
-            if is_voice_channel:
-                if is_dnd_active and not is_priority:
-                    _LOGGER.info(f"UniNotifier: DND attivo, skip audio su {target_alias}")
-                    continue # Salta questo target
-                
-                target_volume = PRIORITY_VOLUME if is_priority else slot_volume
-                
-                # Cerchiamo l'entity_id del player per settare il volume
-                # Può essere in service_data (config) o data (runtime)
-                player_entity = base_service_payload.get(CONF_ENTITY_ID) or \
-                                runtime_data.get(CONF_ENTITY_ID)
-                
-                if player_entity:
-                    await hass.services.async_call(
-                        "media_player",
-                        "volume_set",
-                        {CONF_ENTITY_ID: player_entity, "volume_level": target_volume}
-                    )
+                    
+                    if clean_orig_title:
+                        # CASO A: Esiste un titolo -> Prefisso va nel Titolo
+                        final_title = f"{clean_prefix} {clean_orig_title}"
+                        final_msg = f"{greeting_part}{clean_msg}"
+                    else:
+                        # CASO B: Niente titolo -> Prefisso va nel Messaggio
+                        # (clean_prefix + spazio + saluti + messaggio)
+                        final_msg = f"{clean_prefix} {greeting_part}{clean_msg}"
+                        
+            ####################################################################
+            # E. Determinazione del Volume
+            override_volume = specific_data.get("volume", runtime_data.get("volume"))
+            if override_volume is not None:
+                try: target_volume = float(override_volume)
+                except ValueError: target_volume = slot_volume
+            elif is_priority:
+                target_volume = PRIORITY_VOLUME
             else:
-                # Canali NON vocali (es. Telegram)
-                # Se c'è DND, di solito inviamo comunque (silenzioso), a meno che tu non voglia bloccare tutto.
-                # Qui lasciamo passare, la logica DND stringente è spesso solo audio.
-                pass
+                target_volume = slot_volume
+
+            # F. IDENTIFICAZIONE DEI PLAYER FISICI (Per Volume e Invio)
+            # 1. Cerca in tts (media_player_entity_id standard)
+            tts_players = base_service_payload.get("media_player_entity_id", [])
+            if isinstance(tts_players, str): tts_players = [tts_players]
+            
+            # 2. Cerca in notify/alexa (target nel config del canale)
+            notify_targets = channel_conf.get(CONF_TARGET, [])
+            if isinstance(notify_targets, str): notify_targets = [notify_targets]
+            
+            _LOGGER.debug(f"UniNotifier: MediaPlayer o ChatId o tts target {notify_targets}")
+
+            # 3. Lista unificata dei player a cui impostare il volume
+            media_players_targets = []
+            if tts_players:
+                media_players_targets.extend(tts_players)
+            if notify_targets and is_voice_channel:
+                media_players_targets.extend(notify_targets)
+
+            # G. Applicazione Volume e Check DND (Solo Canali Voce)
+            if is_voice_channel:
+                if is_dnd_active and not is_priority and override_volume is None:
+                    _LOGGER.info(f"UniNotifier: Skipped '{target_alias}' (DND attivo)")
+                    continue
+                
+                _LOGGER.debug(f"UniNotifier: MediaPlayer {media_players_targets} - Volume {target_volume}")
+                
+                # Imposta volume se abbiamo player identificati
+                if media_players_targets:
+                    tasks.append(hass.services.async_call(
+                        "media_player", "volume_set", 
+                        {"entity_id": media_players_targets, "volume_level": target_volume}
+                    ))
 
             # F. Costruzione Payload Finale
-            final_payload = base_service_payload.copy()
-            final_payload.update(runtime_data) # Merge dati generali
-            final_payload.update(specific_data) # Merge override target
+            service_payload = base_service_payload.copy()
 
-            # Inseriamo il messaggio finale
-            final_payload[CONF_MESSAGE] = final_msg
-            if title:
-                final_payload[CONF_TITLE] = title
-
-            # G. Gestione Entity ID del Provider (Fix CONF_TARGET)
-            # Se la configurazione del canale ha 'target' (es. tts.google),
-            # lo iniettiamo nel payload come 'entity_id' (o come richiesto dal servizio).
-            if CONF_TARGET in channel_conf:
-                final_payload[CONF_ENTITY_ID] = channel_conf[CONF_TARGET]
-
-            # H. Chiamata al Servizio
-            domain_service = full_service_name.split(".")
-            if len(domain_service) == 2:
-                srv_domain, srv_name = domain_service
-                try:
-                    await hass.services.async_call(srv_domain, srv_name, final_payload)
-                except Exception as e:
-                    _LOGGER.error(f"UniNotifier: Errore chiamata {full_service_name}: {e}")
+            # Mapping Messaggio
+            if srv_domain == "telegram_bot":
+                if "parse_mode" not in service_payload and parse_mode:
+                    service_payload["parse_mode"] = parse_mode
+                if service_type in ["photo", "video"]: 
+                    service_payload["caption"] = final_msg
+                else: 
+                    service_payload["message"] = final_msg
             else:
-                _LOGGER.error(f"UniNotifier: Servizio non valido {full_service_name}")
+                service_payload["message"] = final_msg # Standard per TTS e Notify
 
-    # Registrazione del servizio con lo SCHEMA ESPLICITO
+            if final_title: service_payload["title"] = final_title
+            
+            # I. Routing dei Target nel Payload
+            # Caso 1: TTS usa 'media_player_entity_id' già presente nei dati base.
+            # Caso 2: Provider TTS (es. google_translate)
+            if srv_domain == "tts" and CONF_TARGET in channel_conf:
+                provider_entity = channel_conf.get(CONF_TARGET)
+                if provider_entity:
+                    service_payload[ATTR_ENTITY_ID] = provider_entity
+            
+            # J. Merge Dati Accessori (alexa type, telegram images, etc.)
+            all_additional_data = {}
+            if runtime_data: all_additional_data.update(runtime_data)
+            if specific_data: all_additional_data.update(specific_data)
+            
+            # Pulizia chiavi interne
+            for k in ["volume", CONF_TYPE, "parse_mode"]: all_additional_data.pop(k, None)
+
+            if all_additional_data:
+                if srv_domain == "notify":
+                    # Per Alexa e Mobile App i dati vanno in "data"
+                    if "data" not in service_payload: service_payload["data"] = {}
+                    service_payload["data"].update(all_additional_data)
+                else:
+                    # Per altri servizi, merge diretto
+                    service_payload.update(all_additional_data)
+
+            # G. Fix Entity ID Injection
+            # Iniettiamo CONF_TARGET come entity_id SOLO se il servizio è un TTS
+            # if srv_domain == "tts" and CONF_TARGET in channel_conf:
+            #     final_payload[CONF_ENTITY_ID] = channel_conf[CONF_TARGET]
+
+            # H. SEND 
+            if srv_domain == "telegram_bot":
+                p = service_payload.copy()
+                p[CONF_TARGET] = str(notify_targets[0]) # Telegram vuole 'target' per il chat_id
+                _LOGGER.debug(f"UniNotifier: Final payload {p} - Service data {srv_domain}/{srv_name}")
+                tasks.append(hass.services.async_call(srv_domain, srv_name, p))
+            else:
+                # Chiamata Standard (TTS, Alexa, Notify)
+                _LOGGER.debug(f"UniNotifier: Final payload {service_payload} - Service data {srv_domain}/{srv_name}")
+                tasks.append(hass.services.async_call(srv_domain, srv_name, service_payload))
+
+        # Esecuzione parallela di tutti i task (volumi e notifiche)
+        if tasks:
+            await asyncio.gather(*tasks)
+
     hass.services.async_register(
-        DOMAIN, 
-        "send", 
-        async_send_notification, 
-        schema=SEND_SERVICE_SCHEMA
+        DOMAIN, "send", async_send_notification, schema=SEND_SERVICE_SCHEMA
     )
     
     return True
