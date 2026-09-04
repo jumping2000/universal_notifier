@@ -358,6 +358,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     final_msg = full_spoken_text
                     final_title = None
                     text_content_for_duration = final_msg
+                elif srv_domain == "notify" and srv_name == "send_message":
+                    device_type = "apple" if is_apple_device(hass, dynamic_entities) else "android"
+                    final_msg, final_title = apply_mobile_notify_text_formatting(
+                        message=target_raw_message,
+                        title=final_title,
+                        device_type=device_type,
+                        name=raw_name,
+                        time_str=raw_time_str,
+                        greeting=current_greeting,
+                        parse_mode=parse_mode,
+                        use_bold_prefix=use_bold_prefix,
+                        skip_assistant_name=skip_assistant_name,
+                    )
                 else:
                     clean_name = sanitize_text_visual(raw_name, parse_mode)
                     clean_time = sanitize_text_visual(raw_time_str, parse_mode)
@@ -532,7 +545,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug(f"UniNotifier: Sezione J, Messaggio per {target_alias} accodato.")
             else:
                 _LOGGER.debug(f"UniNotifier: Sezione J, Final payload {service_payload} - Service data {srv_domain}/{srv_name}")
-                tasks.append(hass.services.async_call(srv_domain, srv_name, service_payload))
+                if srv_domain == "notify" and srv_name == "send_message":
+                    # notify.send_message requires target as a separate async_call
+                    # parameter and does not accept 'target' or 'data' in service_data
+                    target_entities = service_payload.pop(CONF_TARGET, None)
+                    service_payload.pop("data", None)
+                    call_target = {"entity_id": target_entities} if target_entities else None
+                    tasks.append(hass.services.async_call(srv_domain, srv_name, service_payload, target=call_target))
+                else:
+                    tasks.append(hass.services.async_call(srv_domain, srv_name, service_payload))
 
         if tasks:
             await asyncio.gather(*tasks)
