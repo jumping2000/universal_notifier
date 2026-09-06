@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] - 2026-09-06 - PRODUCTION
+
+### Added
+- **`notify.send_message` support**: Channels using the Home Assistant notify entity architecture (`service: notify.send_message` + `target: notify.<name>`) are now dispatched correctly. The target is passed as the `target` kwarg of the service call and the `data` key is no longer injected, both of which `notify.send_message` rejects.
+
+### Fixed
+- **Empty target no longer forwarded as `['']`**: A channel with a blank `target` field no longer overrides the default recipient of `notify.*` services (e.g. SMTP) with an empty list. Empty and whitespace-only entries are now filtered out during target normalization.
+
 ## [0.8.4] - 2026-07-26 - PRODUCTION
 
 ### Added

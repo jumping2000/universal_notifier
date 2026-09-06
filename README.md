@@ -9,7 +9,7 @@ a new release from an appdaemon app by @caiosweet and @jumping2000
 ![License](https://img.shields.io/github/license/jumping2000/universal_notifier?style=for-the-badge)
 ![HA integration](https://img.shields.io/badge/Home%20Assistant-Integration-blue?style=for-the-badge)
 
-> **🆕 Latest (v0.8.0):** Weekday/Weekend DND split, comma-separated multi-target support. See the [Changelog](CHANGELOG.md) for details.
+> **🆕 Latest (v0.9.0):** notify.send_message support and some fixes. See the [Changelog](CHANGELOG.md) for details.
 >
 > [User configuration Guide](USER_GUIDE.md)
 

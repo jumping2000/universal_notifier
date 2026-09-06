@@ -1,0 +1,25 @@
+# Version control / IDE
+.git/
+.vscode/
+.github/
+
+# Python — .venv contains Windows-only symlinks (e.g. lib64) that break
+# the Docker build context on Windows ("The file cannot be accessed by the system")
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Home Assistant runtime data
+config/
+
+# Docs / artifacts not needed in the image
+docs/
+img/
+htmlcov/
+.coverage
+
+# Docker/devcontainer config (not needed inside the build context)
+.devcontainer/
+tests/Dockerfile.test
+.dockerignore

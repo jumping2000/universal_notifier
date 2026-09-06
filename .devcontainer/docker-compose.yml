@@ -1,12 +1,15 @@
-version: "3.8"
-
 services:
   homeassistant:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
-    image: homeassistant/home-assistant:stable
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: universal_notifier_ha_dev
+    # Home Assistant Core needs to write to /config (a bind mount); running as
+    # root avoids permission issues on bind mounts (same as the official image).
+    user: root
+
+    # Start Home Assistant against the mounted config directory.
+    command: [ "hass", "-c", "/config" ]
 
     volumes:
       # Cartella config HA (configuration.yaml, .storage, db, ecc.)
