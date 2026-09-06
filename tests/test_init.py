@@ -68,6 +68,60 @@ class TestChannelRouting:
 
 
 # ============================================================================
+# Empty target / notify.send_message
+# ============================================================================
+
+class TestEmptyTarget:
+    @freeze_time("2026-06-17 10:00:00")
+    async def test_empty_target_not_forwarded(
+        self, hass, _call_send, service_calls, setup_integration
+    ):
+        """An empty target must not be forwarded as ['']."""
+        entry = setup_integration
+        conf = hass.data[DOMAIN][entry.entry_id]["conf"]
+        original = conf[CONF_CHANNELS]["test_text"][CONF_TARGET]
+        conf[CONF_CHANNELS]["test_text"][CONF_TARGET] = ""
+        try:
+            await _call_send(message="Test", targets=["test_text"])
+            notify_calls = [c for c in service_calls if c["domain"] == "notify"]
+            assert len(notify_calls) >= 1
+            assert "target" not in notify_calls[0]["data"]
+        finally:
+            conf[CONF_CHANNELS]["test_text"][CONF_TARGET] = original
+
+
+class TestNotifySendMessage:
+    @freeze_time("2026-06-17 10:00:00")
+    async def test_notify_send_message_target_kwarg(
+        self, hass, _call_send, service_calls, setup_integration
+    ):
+        """notify.send_message must get target as kwarg, not inside data."""
+        entry = setup_integration
+        conf = hass.data[DOMAIN][entry.entry_id]["conf"]
+        conf[CONF_CHANNELS]["mail_gianpi"] = {
+            CONF_SERVICE: "notify.send_message",
+            CONF_TARGET: "notify.gianpi_homeassistant",
+            CONF_IS_VOICE: False,
+            CONF_DEFAULT_MEDIA_PLAYER: "",
+        }
+        try:
+            await _call_send(
+                message="Prova", title="Casa Smart", targets=["mail_gianpi"]
+            )
+            calls = [
+                c for c in service_calls
+                if c["domain"] == "notify" and c["service"] == "send_message"
+            ]
+            assert len(calls) == 1
+            assert "target" not in calls[0]["data"]
+            assert "data" not in calls[0]["data"]
+            assert calls[0]["data"].get("message")
+            assert calls[0]["target"] == {"entity_id": ["notify.gianpi_homeassistant"]}
+        finally:
+            conf[CONF_CHANNELS].pop("mail_gianpi", None)
+
+
+# ============================================================================
 # DND logic
 # ============================================================================
 

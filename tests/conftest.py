@@ -103,7 +103,7 @@ class MockServiceRegistry:
             return (domain, service) in self._handlers
         return any(d == domain for d, _ in self._handlers)
 
-    async def async_call(self, domain, service, data=None, blocking=True):
+    async def async_call(self, domain, service, data=None, blocking=True, target=None):
         key = (domain, service)
         if key in self._handlers:
             call = MagicMock()
@@ -114,6 +114,7 @@ class MockServiceRegistry:
                 "domain": domain,
                 "service": service,
                 "data": data or {},
+                "target": target,
             })
 
     @property

@@ -420,6 +420,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     f"UniNotifier: Sezione B, Servizio non valido {full_service_name}"
                 )
                 continue
+            # ADDED: Check if the service is notify.send_message for special handling
+            is_notify_send_message = (
+                srv_domain == "notify" and srv_name == "send_message"
+            )
 
             ####################################################################
             # C. Check Comandi MOBILE APP
@@ -584,8 +588,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ####################################################################
             # H. Routing dei Target nel Payload
             conf_target_value = channel_conf.get(CONF_TARGET)
-            if conf_target_value is not None:
-                # Normalize: always produce list[str] regardless of input type
+            if conf_target_value:
+                # Normalize: always produce list[str] regardless of input type,
+                # dropping empty / whitespace-only entries.
                 if not isinstance(conf_target_value, list):
                     if isinstance(conf_target_value, str) and "," in conf_target_value:
                         conf_target_value = [
@@ -593,7 +598,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         ]
                     else:
                         conf_target_value = [conf_target_value]
-                conf_target_value = [str(x) for x in conf_target_value]
+                conf_target_value = [
+                    str(x).strip() for x in conf_target_value if str(x).strip()
+                ]
             if conf_target_value:
                 if srv_domain == "tts":
                     service_payload[ATTR_ENTITY_ID] = conf_target_value
@@ -614,7 +621,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for k in ["volume", CONF_TYPE, "parse_mode"]:
                 all_additional_data.pop(k, None)
 
-            if all_additional_data:
+            # if all_additional_data:
+            if all_additional_data and not is_notify_send_message:
                 if srv_domain == "notify":
                     if "data" not in service_payload:
                         service_payload["data"] = {}
@@ -628,6 +636,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 not is_voice_channel
                 and not is_command_message
                 and srv_domain == "notify"
+                and not is_notify_send_message
                 and parse_mode
             ):
                 if "data" not in service_payload:
@@ -697,6 +706,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug(
                     f"UniNotifier: Sezione J, Messaggio per {target_alias} accodato."
                 )
+            elif is_notify_send_message:
+                target_entities = service_payload.pop(CONF_TARGET, None)
+                call_kwargs = {}
+                if target_entities:
+                    call_kwargs["target"] = {ATTR_ENTITY_ID: target_entities}
+                _LOGGER.debug(
+                    f"UniNotifier: Sezione J, notify.send_message target={target_entities} payload {service_payload}"
+                )
+                tasks.append(
+                    hass.services.async_call(
+                        srv_domain, srv_name, service_payload, **call_kwargs
+                    )
+                )
             else:
                 _LOGGER.debug(
                     f"UniNotifier: Sezione J, Final payload {service_payload} - Service data {srv_domain}/{srv_name}"
@@ -704,7 +726,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 tasks.append(
                     hass.services.async_call(srv_domain, srv_name, service_payload)
                 )
-
         if tasks:
             await asyncio.gather(*tasks)
 
