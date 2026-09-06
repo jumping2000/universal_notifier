@@ -3,6 +3,7 @@
     "dockerComposeFile": "docker-compose.yml",
     "service": "homeassistant",
     "workspaceFolder": "/workspace",
+    "remoteUser": "root",
     "shutdownAction": "stopCompose",
     "forwardPorts": [
         8123

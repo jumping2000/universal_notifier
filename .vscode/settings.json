@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "./.venv/Scripts/python.exe",
+    "python.defaultInterpreterPath": "./.venv/bin/python3.14",
     "editor.formatOnSave": true,
     "python.testing.pytestEnabled": true,
     "python.analysis.typeCheckingMode": "standard",
